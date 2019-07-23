@@ -2,6 +2,8 @@ import torch.nn as nn
 import torch
 from torchvision import models
 from utils import save_net, load_net
+from torchvision.models.resnet import ResNet, resnet18
+from torchsummary import summary
 
 
 class DSNet(nn.Module):
@@ -56,3 +58,99 @@ def make_layers(cfg, in_channels=3, batch_norm=False, dilation=False):
                 layers += [conv2d, nn.ReLU(inplace=True)]
             in_channels = v
     return nn.Sequential(*layers)
+
+
+class DDCB(nn.Module):
+    def __init__(self,):
+        super(DDCB, self).__init__()
+        self.base_block1 = DSNetBasicBlock(in_channels=3,  dilation_num=1).to("cuda")
+
+        self.base_block2 = DSNetBasicBlock(in_channels=64, dilation_num=2).to("cuda")
+        self.out2_res = self.base_block2.make_residual(in_plain=3)
+
+        self.base_block3 = DSNetBasicBlock(in_channels=64, dilation_num=3).to("cuda")
+        self.out3_res = self.base_block2.make_residual(in_plain=3)
+
+        self.conv_3x3_512 = nn.Conv2d(in_channels=64, out_channels=512, kernel_size=3,dilation=1,padding=0)
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, input):
+        out1 = self.base_block1(input)
+        out1 = self.relu(out1)
+        print("1 ")
+
+        out2 = self.base_block2(out1)
+        # 添加额外的残差
+        input_part = self.out2_res(input)
+        out2 += input_part
+        out2 = self.relu(out2)
+        print("2 ")
+
+        out3 = self.base_block3(out2)
+        # 添加额外的残差
+        input_part = self.out3_res(input)
+        out3 += input_part
+        out3 = self.relu(out3)
+
+        final = self.conv_3x3_512(out3)
+        final = self.relu(final)
+
+        return final
+
+class DSNetBasicBlock(nn.Module):
+    def __init__(self, in_channels=3, dilation_num=1,residual_part=None):
+        super(DSNetBasicBlock, self).__init__()
+        self.in_channel = in_channels
+        self.conv_1x1_D_1 = nn.Conv2d(in_channels=in_channels, out_channels=256, kernel_size=1, dilation=1,padding=0)
+        self.conv_3x3_D_num = nn.Conv2d(in_channels=256, out_channels=64, kernel_size=3,dilation=dilation_num, padding=dilation_num,stride=1)
+        self.bn1 = nn.BatchNorm2d(num_features=256)
+        self.relu = nn.ReLU(inplace=True)
+        self.bn2 = nn.BatchNorm2d(64)
+        self.mid = 0
+        self.out = 0
+        self.residual_part = residual_part
+        self.residual_part_layer= self.make_residual(in_plain=self.in_channel)
+
+    def make_residual(self,in_plain=3):
+        return  nn.Sequential(
+            nn.Conv2d(kernel_size=1, in_channels=in_plain, out_channels=64,padding=0,dilation=1,stride=1),
+            nn.BatchNorm2d(num_features=64),
+            )
+
+    def forward(self, input):
+        identity = input
+        out = self.conv_1x1_D_1(input)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv_3x3_D_num(out)
+        self.out = self.bn2(out)
+
+        # 自带的残差边
+        identity = self.residual_part_layer(input)
+
+        self.final = self.out + identity
+
+        return self.final
+
+if __name__ == '__main__':
+    # model = DSNetBasicBlock().to("cuda")
+    # summary(model,input_size=(3,512,512))
+
+
+    # model_resnet = resnet18().to("cuda")
+    # summary(model_resnet,input_size=(3,1024,1024))
+
+
+    model = DDCB().to("cuda")
+    summary(model,input_size=(3, 256, 256))
+
+
+
+
+
+
+
+
+
+
