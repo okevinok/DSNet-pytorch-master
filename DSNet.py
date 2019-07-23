@@ -11,9 +11,10 @@ class DSNet(nn.Module):
         super(DSNet, self).__init__()
         self.seen = 0
         self.frontend_feat = [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'M', 512, 512, 512]
-        self.backend_feat = [512, 512, 512, 256, 128, 64]
+        self.backend_feat = [128, 64]
         self.frontend = make_layers(self.frontend_feat)
-        self.backend = make_layers(self.backend_feat, in_channeals=512, dilation=True)
+        self.middlend =
+        self.backend = make_layers(self.backend_feat, in_channeals=512, dilation=False)
 
         # self.DDCB = make_layers()
 
@@ -26,6 +27,7 @@ class DSNet(nn.Module):
 
     def forward(self, x):
         x = self.frontend(x)
+
         x = self.backend(x)
         x = self.output_layer(x)
         return x
@@ -47,9 +49,9 @@ def make_layers(cfg, in_channels=3, batch_norm=False, dilation=False):
     else:
         d_rate = 1
     layers = []
-    for v in cfg:
-        if v == 'M':
-            layers += [nn.MaxPool2d(kernel_size=2, stride=2)]
+    for i, v in cfg:
+        if i==len(cfg)-1:
+            conv2d = nn.Conv2d(in_channels, v, kernel_size=1, padding=d_rate, dilation=d_rate)
         else:
             conv2d = nn.Conv2d(in_channels, v, kernel_size=3, padding=d_rate, dilation=d_rate)
             if batch_norm:
@@ -71,20 +73,25 @@ class DDCB(nn.Module):
         self.base_block3 = DSNetBasicBlock(in_channels=64, dilation_num=3).to("cuda")
         self.out3_res = self.base_block2.make_residual(in_plain=3)
 
-        self.conv_3x3_512 = nn.Conv2d(in_channels=64, out_channels=512, kernel_size=3,dilation=1,padding=0)
+        self.conv_3x3_512 = nn.Conv2d(in_channels=64, out_channels=512, kernel_size=3,dilation=1,padding=1)
         self.relu = nn.ReLU(inplace=True)
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
 
     def forward(self, input):
         out1 = self.base_block1(input)
         out1 = self.relu(out1)
-        print("1 ")
 
         out2 = self.base_block2(out1)
         # 添加额外的残差
         input_part = self.out2_res(input)
         out2 += input_part
         out2 = self.relu(out2)
-        print("2 ")
 
         out3 = self.base_block3(out2)
         # 添加额外的残差
@@ -143,9 +150,8 @@ if __name__ == '__main__':
 
 
     model = DDCB().to("cuda")
-    summary(model,input_size=(3, 256, 256))
-
-
+    summary(model,input_size=(3, 256, 512))
+    # print(model.eval())
 
 
 
