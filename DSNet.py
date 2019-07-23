@@ -61,7 +61,7 @@ def make_layers(cfg, in_channels=3, batch_norm=False, dilation=False):
             in_channels = v
     return nn.Sequential(*layers)
 
-#TODO 没有将 创建好的DDCB进行组合构成DSNet
+# TODO 没有将 创建好的DDCB进行组合构成DSNet
 class DDCB(nn.Module):
     def __init__(self,):
         super(DDCB, self).__init__()
