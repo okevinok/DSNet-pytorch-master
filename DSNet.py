@@ -13,7 +13,7 @@ class DSNet(nn.Module):
         self.frontend_feat = [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'M', 512, 512, 512]
         self.backend_feat = [128, 64]
         self.frontend = make_layers(self.frontend_feat)
-        self.middlend =
+        # self.middlend =
         self.backend = make_layers(self.backend_feat, in_channeals=512, dilation=False)
 
         # self.DDCB = make_layers()
@@ -62,6 +62,7 @@ def make_layers(cfg, in_channels=3, batch_norm=False, dilation=False):
     return nn.Sequential(*layers)
 
 # TODO 没有将 创建好的DDCB进行组合构成DSNet
+
 class DDCB(nn.Module):
     def __init__(self,):
         super(DDCB, self).__init__()
@@ -144,10 +145,8 @@ if __name__ == '__main__':
     # model = DSNetBasicBlock().to("cuda")
     # summary(model,input_size=(3,512,512))
 
-
     # model_resnet = resnet18().to("cuda")
     # summary(model_resnet,input_size=(3,1024,1024))
-
 
     model = DDCB().to("cuda")
     summary(model,input_size=(3, 256, 512))
