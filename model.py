@@ -50,4 +50,10 @@ def make_layers(cfg, in_channels = 3,batch_norm=False,dilation = False):
             else:
                 layers += [conv2d, nn.ReLU(inplace=True)]
             in_channels = v
-    return nn.Sequential(*layers)                
+    return nn.Sequential(*layers)
+
+
+from torchsummary import summary
+
+a = CSRNet().to("cuda")
+summary(a,input_size=(3,1024,2048))

@@ -20,10 +20,10 @@ class BaseNet(nn.Module):
         x=self.conv1(x)
         out_map=self.conv2(x)
         return out_map
+
+
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-
 
 
 model = BaseNet().to("cuda")

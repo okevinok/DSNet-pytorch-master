@@ -7,30 +7,31 @@ from torchsummary import summary
 
 
 class DSNet(nn.Module):
-    def __init__(self, load_weights=False):
+    def __init__(self, load_weights=True):
         super(DSNet, self).__init__()
         self.seen = 0
         self.frontend_feat = [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'M', 512, 512, 512]
         self.backend_feat = [128, 64]
         self.frontend = make_layers(self.frontend_feat)
-        # self.middlend =
-        self.backend = make_layers(self.backend_feat, in_channeals=512, dilation=False)
-
-        # self.DDCB = make_layers()
-
+        self.backend = make_layers(self.backend_feat, in_channels=512,dilation=True)
         self.output_layer = nn.Conv2d(64, 1, kernel_size=1)
         if not load_weights:
-            mod = models.vgg16(pretrained=True)
+            mod = models.vgg16(pretrained = True)
             self._initialize_weights()
             for i in range(len(self.frontend.state_dict().items())):
                 self.frontend.state_dict().items()[i][1].data[:] = mod.state_dict().items()[i][1].data[:]
 
+        """
+        创建DDCB残差网络
+        """
+        self.DDCB = multi_DDCB_residual(in_plain=512)
+
     def forward(self, x):
         x = self.frontend(x)
-
+        x = self.DDCB(x)
         x = self.backend(x)
-        x = self.output_layer(x)
-        return x
+        y = self.output_layer(x)
+        return y
 
     def _initialize_weights(self):
         for m in self.modules():
@@ -43,17 +44,17 @@ class DSNet(nn.Module):
                 nn.init.constant_(m.bias, 0)
 
 
-def make_layers(cfg, in_channels=3, batch_norm=False, dilation=False):
+def make_layers(cfg, in_channels = 3,batch_norm=False,dilation = False):
     if dilation:
         d_rate = 2
     else:
         d_rate = 1
     layers = []
-    for i, v in cfg:
-        if i==len(cfg)-1:
-            conv2d = nn.Conv2d(in_channels, v, kernel_size=1, padding=d_rate, dilation=d_rate)
+    for v in cfg:
+        if v == 'M':
+            layers += [nn.MaxPool2d(kernel_size=2, stride=2)]
         else:
-            conv2d = nn.Conv2d(in_channels, v, kernel_size=3, padding=d_rate, dilation=d_rate)
+            conv2d = nn.Conv2d(in_channels, v, kernel_size=3, padding=d_rate,dilation = d_rate)
             if batch_norm:
                 layers += [conv2d, nn.BatchNorm2d(v), nn.ReLU(inplace=True)]
             else:
@@ -61,22 +62,62 @@ def make_layers(cfg, in_channels=3, batch_norm=False, dilation=False):
             in_channels = v
     return nn.Sequential(*layers)
 
-# TODO 没有将 创建好的DDCB进行组合构成DSNet
+class multi_DDCB_residual(nn.Module):
+    def __init__(self, in_plain=512):
+        super(multi_DDCB_residual, self).__init__()
+        "尝试进行权重共享"
+        self.in_plain = in_plain
+        self.DDCB = DDCB(in_plain=512)
+        self.residual = self.make_residual()
+        self.relu = nn.ReLU(inplace=True)
 
+
+    def make_residual(self):
+        return nn.Sequential(
+            nn.Conv2d(kernel_size=1, in_channels=self.in_plain, out_channels=512, padding=0, dilation=1, stride=1),
+            nn.BatchNorm2d(num_features=512),
+        )
+
+    def forward(self, input):
+        out1 = self.DDCB(input)
+        out1 = self.relu(out1)
+        res01 = self.residual(input)
+        final1 = out1 + res01
+
+        out2 = self.DDCB(final1)
+        out2 = self.relu(out2)
+        res12 = self.residual(out1)
+        res02 = self.residual(input)
+        final2 = out2 + res12 + res02
+
+        out3 = self.DDCB(final2)
+        out3 = self.relu(out3)
+        res03 = self.residual(input)
+        res13 = self.residual(out1)
+        res23 = self.residual(out2)
+        final3 = out3 + res03 + res13 +res23
+
+        return final3
+
+
+
+    # TODO 没有将 创建好的DDCB进行组合构成DSNet
 class DDCB(nn.Module):
-    def __init__(self,):
+    def __init__(self,in_plain=3):
         super(DDCB, self).__init__()
-        self.base_block1 = DSNetBasicBlock(in_channels=3,  dilation_num=1).to("cuda")
+        self.base_block1 = DSNetBasicBlock(in_channels=in_plain,  dilation_num=1).to("cuda")
 
         self.base_block2 = DSNetBasicBlock(in_channels=64, dilation_num=2).to("cuda")
-        self.out2_res = self.base_block2.make_residual(in_plain=3)
+        self.out2_res = self.make_residual(in_plain=in_plain)
 
         self.base_block3 = DSNetBasicBlock(in_channels=64, dilation_num=3).to("cuda")
-        self.out3_res = self.base_block2.make_residual(in_plain=3)
+        self.out3_res = self.make_residual(in_plain=in_plain)
 
+        # 最后一层
         self.conv_3x3_512 = nn.Conv2d(in_channels=64, out_channels=512, kernel_size=3,dilation=1,padding=1)
         self.relu = nn.ReLU(inplace=True)
 
+        # 进行参数初始化
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
@@ -84,29 +125,36 @@ class DDCB(nn.Module):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 
+    def make_residual(self, in_plain):
+        return  nn.Sequential(
+            nn.Conv2d(kernel_size=1, in_channels=in_plain, out_channels=64,padding=0,dilation=1,stride=1),
+            nn.BatchNorm2d(num_features=64),
+            )
+
     def forward(self, input):
-        out1 = self.base_block1(input)
+        final1, out1 = self.base_block1(input,forward_out=input)
         out1 = self.relu(out1)
 
-        out2 = self.base_block2(out1)
+        final2, out2 = self.base_block2(final1, forward_out=out1)
         # 添加额外的残差
         input_part = self.out2_res(input)
-        out2 += input_part
+        final2 = input_part + final2
         out2 = self.relu(out2)
 
-        out3 = self.base_block3(out2)
+        final3, out3 = self.base_block3(final2, forward_out=out2)
         # 添加额外的残差
         input_part = self.out3_res(input)
-        out3 += input_part
+        final3 = input_part + final3
         out3 = self.relu(out3)
 
-        final = self.conv_3x3_512(out3)
+        final = self.conv_3x3_512(final3)
         final = self.relu(final)
 
         return final
 
+
 class DSNetBasicBlock(nn.Module):
-    def __init__(self, in_channels=3, dilation_num=1,residual_part=None):
+    def __init__(self, in_channels=3, dilation_num=1):
         super(DSNetBasicBlock, self).__init__()
         self.in_channel = in_channels
         self.conv_1x1_D_1 = nn.Conv2d(in_channels=in_channels, out_channels=256, kernel_size=1, dilation=1,padding=0)
@@ -114,19 +162,17 @@ class DSNetBasicBlock(nn.Module):
         self.bn1 = nn.BatchNorm2d(num_features=256)
         self.relu = nn.ReLU(inplace=True)
         self.bn2 = nn.BatchNorm2d(64)
-        self.mid = 0
-        self.out = 0
-        self.residual_part = residual_part
-        self.residual_part_layer= self.make_residual(in_plain=self.in_channel)
+        self.residual_part_layer= self.make_residual()
 
-    def make_residual(self,in_plain=3):
+    def make_residual(self):
+        in_plain = self.in_channel
         return  nn.Sequential(
             nn.Conv2d(kernel_size=1, in_channels=in_plain, out_channels=64,padding=0,dilation=1,stride=1),
-            nn.BatchNorm2d(num_features=64),
+            nn.BatchNorm2d(num_features=64)
             )
 
-    def forward(self, input):
-        identity = input
+    def forward(self, input, forward_out):
+
         out = self.conv_1x1_D_1(input)
         out = self.bn1(out)
         out = self.relu(out)
@@ -135,11 +181,12 @@ class DSNetBasicBlock(nn.Module):
         self.out = self.bn2(out)
 
         # 自带的残差边
-        identity = self.residual_part_layer(input)
+        identity = self.residual_part_layer(forward_out)
 
         self.final = self.out + identity
 
-        return self.final
+        return self.final, self.out
+
 
 if __name__ == '__main__':
     # model = DSNetBasicBlock().to("cuda")
@@ -148,14 +195,8 @@ if __name__ == '__main__':
     # model_resnet = resnet18().to("cuda")
     # summary(model_resnet,input_size=(3,1024,1024))
 
-    model = DDCB().to("cuda")
-    summary(model,input_size=(3, 256, 512))
+    model = DSNet().to("cuda")
+    summary(model,input_size=(3, 1024, 1024))
     # print(model.eval())
 
-
-
-
-
-
-
-
+    # watch - n 1 nvidia - smi
