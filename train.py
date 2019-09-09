@@ -1,23 +1,17 @@
-import sys
 import os
-
-import warnings
-
-from model import CSRNet
 
 from utils import save_checkpoint
 
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
-from torchvision import datasets, transforms
+from torchvision import transforms
 
-import numpy as np
 import argparse
 import json
-import cv2
-import dataset
+from past import dataset
 import time
+from DSNet import DSNet
 
 parser = argparse.ArgumentParser(description='PyTorch CSRNet')
 #
@@ -37,7 +31,7 @@ parser = argparse.ArgumentParser(description='PyTorch CSRNet')
 #                          'se.',default=0)
 
 def main():
-    
+    torch.autograd.set_detect_anomaly(True)
     global args,best_prec1
     
     best_prec1 = 1e6
@@ -70,13 +64,11 @@ def main():
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
     torch.cuda.manual_seed(args.seed)
     
-    model = CSRNet()
-    
-    model = model.cuda()
-    
+    model = DSNet().to("cuda")
+
     criterion = nn.MSELoss(size_average=False).cuda()
     
-    optimizer = torch.optim.SGD(model.parameters(), args.lr,
+    optimizer = torch.optim.SGD(model.multi_DDCB.parameters(), args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.decay)
 
@@ -112,24 +104,24 @@ def main():
             'optimizer' : optimizer.state_dict(),
         }, is_best,args.task)
 
+
 def train(train_list, model, criterion, optimizer, epoch):
     
     losses = AverageMeter()
     batch_time = AverageMeter()
     data_time = AverageMeter()
     
-    
     train_loader = torch.utils.data.DataLoader(
         dataset.listDataset(train_list,
-                       shuffle=True,
-                       transform=transforms.Compose([
+                            shuffle=True,
+                            transform=transforms.Compose([
                        transforms.ToTensor(),transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225]),
-                   ]), 
-                       train=True, 
-                       seen=model.seen,
-                       batch_size=args.batch_size,
-                       num_workers=args.workers),
+                   ]),
+                            train=True,
+                            seen=model.seen,
+                            batch_size=args.batch_size,
+                            num_workers=args.workers),
         batch_size=args.batch_size)
     print('epoch %d, processed %d samples, lr %.10f' % (epoch, epoch * len(train_loader.dataset), args.lr))
     
@@ -170,11 +162,11 @@ def validate(val_list, model, criterion):
     print ('begin test')
     test_loader = torch.utils.data.DataLoader(
     dataset.listDataset(val_list,
-                   shuffle=False,
-                   transform=transforms.Compose([
+                        shuffle=False,
+                        transform=transforms.Compose([
                        transforms.ToTensor(),transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225]),
-                   ]),  train=False),
+                   ]), train=False),
     batch_size=args.batch_size)    
     
     model.eval()

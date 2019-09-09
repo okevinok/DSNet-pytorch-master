@@ -7,7 +7,7 @@ from torchsummary import summary
 
 
 class DSNet(nn.Module):
-    def __init__(self, load_weights=True):
+    def __init__(self, load_weights=False):
         super(DSNet, self).__init__()
         self.seen = 0
         self.frontend_feat = [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'M', 512, 512, 512]
@@ -15,20 +15,34 @@ class DSNet(nn.Module):
         self.frontend = make_layers(self.frontend_feat)
         self.backend = make_layers(self.backend_feat, in_channels=512,dilation=True)
         self.output_layer = nn.Conv2d(64, 1, kernel_size=1)
+        self._initialize_weights()
+
+        # 加载权重
         if not load_weights:
-            mod = models.vgg16(pretrained = True)
-            self._initialize_weights()
-            for i in range(len(self.frontend.state_dict().items())):
-                self.frontend.state_dict().items()[i][1].data[:] = mod.state_dict().items()[i][1].data[:]
+            pre_train_dict = models.vgg16(pretrained = True).state_dict()
+            model_dict = self.frontend.state_dict()
+            model_back_dict = self.backend.state_dict()
+            pre_train_dict = {k: v for k, v in pre_train_dict.items() if k in model_dict}
+            pre_train_back_dict = {k: v for k, v in pre_train_dict.items() if k in model_back_dict}
+            model_dict.update(pre_train_dict)
+            model_back_dict.update(pre_train_back_dict)
+            self.frontend.load_state_dict(model_dict)
+            self.backend.load_state_dict(model_back_dict)
+
+        # 固定某些参数
+        for param in self.frontend.parameters():
+            param.requires_grad = False
+        for param in self.backend.parameters():
+            param.requires_grad = False
 
         """
-        创建DDCB残差网络
+        创建DDCB残差网络， 训练的时候只是训练DDCB部分 和最后一层
         """
-        self.DDCB = multi_DDCB_residual(in_plain=512)
+        self.multi_DDCB = multi_DDCB_residual(in_plain=512)
 
     def forward(self, x):
         x = self.frontend(x)
-        x = self.DDCB(x)
+        x = self.multi_DDCB(x)
         x = self.backend(x)
         y = self.output_layer(x)
         return y
@@ -42,6 +56,12 @@ class DSNet(nn.Module):
             elif isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
+
+    def compute_loss(self, nn_outputs, y_true):
+        criterion = nn.MSELoss(size_average=False).cuda()
+        # loss = K.sqrt(K.sum(K.square(nn_outputs - y_true), axis=-1))
+        loss = criterion(nn_outputs, y_true)
+        return loss
 
 
 def make_layers(cfg, in_channels = 3,batch_norm=False,dilation = False):
@@ -67,7 +87,9 @@ class multi_DDCB_residual(nn.Module):
         super(multi_DDCB_residual, self).__init__()
         "尝试进行权重共享"
         self.in_plain = in_plain
-        self.DDCB = DDCB(in_plain=512)
+        self.DDCB1 = DDCB(in_plain=512)
+        self.DDCB2 = DDCB(in_plain=512)
+        self.DDCB3 = DDCB(in_plain=512)
         self.residual = self.make_residual()
         self.relu = nn.ReLU(inplace=True)
 
@@ -79,18 +101,18 @@ class multi_DDCB_residual(nn.Module):
         )
 
     def forward(self, input):
-        out1 = self.DDCB(input)
+        out1 = self.DDCB1(input)
         out1 = self.relu(out1)
         res01 = self.residual(input)
         final1 = out1 + res01
 
-        out2 = self.DDCB(final1)
+        out2 = self.DDCB2(final1)
         out2 = self.relu(out2)
         res12 = self.residual(out1)
         res02 = self.residual(input)
         final2 = out2 + res12 + res02
 
-        out3 = self.DDCB(final2)
+        out3 = self.DDCB3(final2)
         out3 = self.relu(out3)
         res03 = self.residual(input)
         res13 = self.residual(out1)
@@ -148,7 +170,6 @@ class DDCB(nn.Module):
         out3 = self.relu(out3)
 
         final = self.conv_3x3_512(final3)
-        final = self.relu(final)
 
         return final
 
@@ -195,8 +216,10 @@ if __name__ == '__main__':
     # model_resnet = resnet18().to("cuda")
     # summary(model_resnet,input_size=(3,1024,1024))
 
+
+    
     model = DSNet().to("cuda")
-    summary(model,input_size=(3, 1024, 1024))
+    summary(model,input_size=(3, 1024, 512))
     # print(model.eval())
 
     # watch - n 1 nvidia - smi
